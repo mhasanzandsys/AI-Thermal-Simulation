@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 import {
   Cpu, Home, FolderKanban, Package, Layers, LayoutGrid, SlidersHorizontal, LineChart, Bot, FileText, Settings, HelpCircle, UserCircle2,
@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { WORKFLOW_STEPS } from '@ats/shared';
 import { useProject } from '@/store/project';
-import { API_URL } from '@/lib/api';
+import { API_URL, api } from '@/lib/api';
 
 const NAV = [
   { href: '/', label: 'Dashboard', icon: Home },
@@ -44,6 +44,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
   const { init, ready, backendDown, doc, projects, projectId, loadProject, saveState, saveError, toast, job } = useProject();
   const steps = useStepState();
   useEffect(() => { void init(); }, [init]);
+  const [ephemeral, setEphemeral] = useState(false);
+  useEffect(() => { api.health().then((h) => setEphemeral(!!h.storage && !h.storage.persistent)).catch(() => undefined); }, []);
   const activeStep = WORKFLOW_STEPS.findIndex((s) => path.startsWith(s.href));
   const running = job && (job.info.status === 'running' || job.info.status === 'queued');
 
@@ -96,6 +98,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <div className="mt-auto px-3 text-[10.5px] text-slate-400">{doc ? `${doc.project.id} · Rev ${doc.project.revision}` : ''}</div>
         </aside>
         <main className="min-w-0 flex-1 overflow-auto">
+          {ephemeral && (
+            <div className="flex items-center justify-between gap-2 bg-amber-50 px-4 py-1.5 text-[12px] text-amber-800">
+              <span>Temporary storage: this deployment has no database configured, so projects and results reset when the server restarts. Connect a Turso database (TURSO_DATABASE_URL, TURSO_AUTH_TOKEN) to keep them.</span>
+              <button className="text-amber-700 hover:underline" onClick={() => setEphemeral(false)}>Dismiss</button>
+            </div>
+          )}
           {backendDown ? (
             <div className="m-8 card p-6">
               <div className="flex items-center gap-2 text-lg font-semibold text-red-600"><CloudOff className="h-5 w-5" /> Cannot reach the backend API</div>

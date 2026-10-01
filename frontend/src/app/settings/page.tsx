@@ -9,12 +9,18 @@ import { SolverPanel } from '@/components/panels/SolverPanel';
 
 export default function SettingsPage() {
   const [health, setHealth] = useState<boolean | null>(null);
-  useEffect(() => { api.health().then(() => setHealth(true)).catch(() => setHealth(false)); }, []);
+  const [info, setInfo] = useState<Awaited<ReturnType<typeof api.health>> | null>(null);
+  useEffect(() => { api.health().then((h) => { setHealth(true); setInfo(h); }).catch(() => setHealth(false)); }, []);
   return (
     <div className="mx-auto max-w-[1100px] space-y-3 p-4">
       <PageHeader title="Settings" />
       <Card title="Backend connection">
         <div className="flex items-center gap-2 text-[12.5px]">{health ? <CheckCircle2 className="h-4 w-4 text-emerald-600" /> : <XCircle className="h-4 w-4 text-red-500" />}API: <code className="rounded bg-slate-100 px-1">{API_URL}</code> {health == null ? 'checking…' : health ? 'reachable' : 'unreachable'}</div>
+        {info?.storage && (
+          <p className={`mt-1 text-[12px] ${info.storage.persistent ? 'text-emerald-700' : 'text-amber-700'}`}>
+            Database: {info.storage.kind === 'remote' ? 'Turso / libSQL' : 'SQLite file'} ({info.storage.location}){info.storage.persistent ? ' — persistent.' : ' — temporary: data is lost when the serverless instance restarts. Add a Turso database (TURSO_DATABASE_URL + TURSO_AUTH_TOKEN) to keep projects.'}
+          </p>
+        )}
         <p className="mt-1 text-[11.5px] text-slate-500">Change with <code>NEXT_PUBLIC_API_URL</code> in <code>frontend/.env.local</code>. Database and uploads live in <code>backend/data</code> (override with <code>DATA_DIR</code>).</p>
       </Card>
       <SolverPanel full />

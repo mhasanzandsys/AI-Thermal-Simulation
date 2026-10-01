@@ -45,6 +45,7 @@ interface State {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let es: EventSource | null = null;
+let streamAbort: AbortController | null = null;
 const LS_KEY = 'ats.projectId';
 
 const computeIssues = (doc: ProjectDoc, results: ThermalResults | null) => validateProject(doc, { resultThetaJA: results?.thetaJA ?? null });
@@ -138,14 +139,50 @@ export const useProject = create<State>((set, get) => ({
     if (!doc) return;
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     await get().saveNow();
-    set({ runError: null });
+    es?.close(); es = null;
+    set({ runError: null, job: { info: { id: '…', projectId: doc.project.id, status: 'queued', progress: 0, stage: 'Starting', createdAt: new Date().toISOString(), finishedAt: null, error: null, solver: doc.solver.type }, logs: [], residuals: [] } });
+    // The job runs inside this request and streams progress back (works on serverless hosts like Vercel).
+    const ctrl = new AbortController();
+    streamAbort = ctrl;
+    let gotDone = false, jobId: string | null = null;
     try {
-      const job = await api.run(doc.project.id, fallback);
-      get().attachJob(job.id);
+      const res = await fetch(api.runStreamUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId: doc.project.id, fallbackToBuiltin: fallback }), signal: ctrl.signal });
+      if (!res.ok || !res.body) {
+        let body: { error?: string; details?: unknown } = {};
+        try { body = await res.json(); } catch { /* not json */ }
+        throw new ApiError(res.status, body.error ?? `${res.status} ${res.statusText}`, body.details);
+      }
+      const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += value;
+        let k: number;
+        while ((k = buf.indexOf('\n\n')) >= 0) {
+          const frame = buf.slice(0, k); buf = buf.slice(k + 2);
+          let ev = 'message'; const data: string[] = [];
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+          }
+          if (!data.length) continue;
+          const parsed = JSON.parse(data.join('\n'));
+          if (ev === 'snapshot') jobId = parsed?.info?.id ?? jobId;
+          if (ev === 'done') gotDone = true;
+          await onJobEvent(ev, parsed);
+        }
+      }
+      // connection closed early (e.g. function timeout / network drop): follow the job via the events endpoint
+      if (!gotDone && jobId) get().attachJob(jobId);
     } catch (e) {
+      if ((e as Error).name === 'AbortError') return;
+      if (jobId && !gotDone) { get().attachJob(jobId); return; }
       const err = e as ApiError;
-      set({ runError: { message: err.message, details: Array.isArray(err.details) ? (err.details as ValidationIssue[]) : undefined } });
+      set((s) => ({ job: s.job?.info.id === '…' ? null : s.job, runError: { message: err.message, details: Array.isArray(err.details) ? (err.details as ValidationIssue[]) : undefined } }));
       get().notify('error', err.message);
+    } finally {
+      if (streamAbort === ctrl) streamAbort = null;
     }
   },
 
@@ -154,39 +191,13 @@ export const useProject = create<State>((set, get) => ({
     set({ job: { info: { id: jobId, projectId: get().projectId ?? '', status: 'queued', progress: 0, stage: 'Connecting', createdAt: new Date().toISOString(), finishedAt: null, error: null, solver: '' }, logs: [], residuals: [] } });
     const src = new EventSource(api.eventsUrl(jobId));
     es = src;
-    src.addEventListener('snapshot', (ev) => {
-      const d = JSON.parse((ev as MessageEvent).data) as { info: JobInfo; logs: string[]; residuals: { iteration: number; residual: number }[] };
-      set({ job: { info: d.info, logs: d.logs, residuals: d.residuals } });
-    });
-    src.addEventListener('status', (ev) => {
-      const info = JSON.parse((ev as MessageEvent).data) as JobInfo | null;
-      if (!info) return;
-      set((s) => ({ job: s.job ? { ...s.job, info } : { info, logs: [], residuals: [] } }));
-    });
-    src.addEventListener('log', (ev) => {
-      const line = JSON.parse((ev as MessageEvent).data) as string;
-      set((s) => (s.job ? { job: { ...s.job, logs: [...s.job.logs, line] } } : {}));
-    });
-    src.addEventListener('residual', (ev) => {
-      const pt = JSON.parse((ev as MessageEvent).data) as { iteration: number; residual: number };
-      set((s) => (s.job ? { job: { ...s.job, residuals: [...s.job.residuals, pt] } } : {}));
-    });
-    src.addEventListener('done', async (ev) => {
-      src.close();
-      if (es === src) es = null;
-      const info = JSON.parse((ev as MessageEvent).data) as JobInfo | null;
-      if (!info) return;
-      if (info.status === 'completed') {
-        await get().loadResults(info.id);
-        get().update((d) => { d.solver.jobId = info.id; });
-        get().notify('success', 'Simulation completed');
-      } else if (info.status === 'failed') {
-        set({ runError: { message: info.error ?? 'Job failed' } });
-        get().notify('error', info.error ?? 'Job failed');
-      }
-      // pull persisted logs if the stream ended before we got them
-      try { const d: JobDetail = await api.job(info.id); set((s) => ({ job: { info: d, logs: d.logs?.length ? d.logs : s.job?.logs ?? [], residuals: s.job?.residuals ?? [] } })); } catch { /* */ }
-    });
+    for (const ev of ['snapshot', 'status', 'log', 'residual', 'done']) {
+      src.addEventListener(ev, (m) => {
+        const data = JSON.parse((m as MessageEvent).data);
+        if (ev === 'done') { src.close(); if (es === src) es = null; }
+        void onJobEvent(ev, data);
+      });
+    }
     src.onerror = () => { /* browser auto-reconnects; 'done' closes */ };
   },
 
@@ -217,6 +228,36 @@ export const useProject = create<State>((set, get) => ({
     setTimeout(() => { if (get().toast?.text === text) set({ toast: null }); }, 3500);
   },
 }));
+
+/** Applies one job event (from the run stream or the events endpoint) to the store. */
+async function onJobEvent(ev: string, data: unknown) {
+  const { getState: get, setState: set } = useProject;
+  if (ev === 'snapshot') {
+    const d = data as { info: JobInfo; logs: string[]; residuals: { iteration: number; residual: number }[] };
+    set({ job: { info: d.info, logs: d.logs ?? [], residuals: d.residuals ?? [] } });
+  } else if (ev === 'status') {
+    const info = data as JobInfo | null;
+    if (info) set((s) => ({ job: s.job ? { ...s.job, info } : { info, logs: [], residuals: [] } }));
+  } else if (ev === 'log') {
+    set((s) => (s.job ? { job: { ...s.job, logs: [...s.job.logs, data as string] } } : {}));
+  } else if (ev === 'residual') {
+    set((s) => (s.job ? { job: { ...s.job, residuals: [...s.job.residuals, data as { iteration: number; residual: number }] } } : {}));
+  } else if (ev === 'done') {
+    const info = data as JobInfo | null;
+    if (!info) return;
+    set((s) => ({ job: s.job ? { ...s.job, info } : { info, logs: [], residuals: [] } }));
+    if (info.status === 'completed') {
+      await get().loadResults(info.id);
+      get().update((d) => { d.solver.jobId = info.id; });
+      get().notify('success', 'Simulation completed');
+    } else if (info.status === 'failed') {
+      set({ runError: { message: info.error ?? 'Job failed' } });
+      get().notify('error', info.error ?? 'Job failed');
+    }
+    // pull persisted logs if the stream ended before we got them all
+    try { const d: JobDetail = await api.job(info.id); set((s) => ({ job: { info: d, logs: d.logs?.length >= (s.job?.logs.length ?? 0) ? d.logs : s.job?.logs ?? [], residuals: s.job?.residuals ?? [] } })); } catch { /* */ }
+  }
+}
 
 /** Field-level error/warning message for a state-key path. */
 export function useIssue(path: string): ValidationIssue | undefined {

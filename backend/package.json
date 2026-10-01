@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@ats/shared": "*",
-    "better-sqlite3": "^12.4.0",
+    "@libsql/client": "^0.18.0",
     "cors": "^2.8.5",
     "exceljs": "^4.4.0",
     "express": "^5.1.0",
@@ -20,7 +20,6 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",

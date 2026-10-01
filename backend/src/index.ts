@@ -1,18 +1,13 @@
-import express from 'express';
-import cors from 'cors';
-import { seed, DATA_DIR } from './db';
-import { api } from './routes';
+import { app } from './app';
+import { DB_LOCATION, initDb } from './db';
 
-seed();
-const app = express();
 const PORT = Number(process.env.PORT ?? 4000);
-const ORIGIN = process.env.CORS_ORIGIN ?? 'http://localhost:3000';
 
-app.use(cors({ origin: ORIGIN.split(','), credentials: true, exposedHeaders: ['Content-Disposition'] }));
-app.use(express.json({ limit: '25mb' }));
-app.use('/api', api);
-app.get('/', (_req, res) => { res.json({ name: 'AI Thermal Simulator API', docs: '/api/health' }); });
+// On Vercel the platform imports the default export; locally we start a server.
+if (!process.env.VERCEL) {
+  initDb()
+    .then(() => app.listen(PORT, () => console.log(`AI Thermal Simulator API on http://localhost:${PORT}  (db: ${DB_LOCATION})`)))
+    .catch((e) => { console.error(e); process.exit(1); });
+}
 
-app.listen(PORT, () => {
-  console.log(`AI Thermal Simulator API listening on http://localhost:${PORT}  (data: ${DATA_DIR})`);
-});
+export default app;

@@ -27,9 +27,21 @@ Configuration (optional, copy the `.env.example` files):
 
 | Variable | Where | Default |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | frontend/.env.local | `http://localhost:4000/api` |
-| `PORT`, `CORS_ORIGIN` | backend env | `4000`, `http://localhost:3000` |
-| `DATA_DIR` | backend env | `backend/data` (SQLite DB, uploads, solver decks) |
+| `NEXT_PUBLIC_API_URL` | frontend | dev: `http://localhost:4000/api`, production: `/api` (same domain). Only set it if the API is on another host. |
+| `PORT`, `CORS_ORIGIN` | backend | `4000`; CORS reflects any origin unless `CORS_ORIGIN` is set |
+| `DATA_DIR` | backend | `backend/data` locally, `/tmp/ats-data` on Vercel |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | backend | unset = local SQLite file. Set them to use a Turso (libSQL) database — required for persistent data on Vercel |
+
+## Deploying to Vercel (single project, two services)
+
+`vercel.json` at the repo root defines two services — `backend` (Express) and `frontend` (Next.js) — and routes `/api/*` to the backend and everything else to the frontend, all on one domain.
+
+1. Import the repository in Vercel with the **root directory left as the repo root** (Framework Preset: Services, picked up from `vercel.json`).
+2. **Do not set `NEXT_PUBLIC_API_URL`** — the app calls `/api` on its own domain, which also works for preview URLs. If you set it earlier, delete it and redeploy (`NEXT_PUBLIC_*` values are baked in at build time).
+3. Add a database so data survives restarts: Vercel → Storage / Marketplace → **Turso** (or create one at turso.tech) and make sure `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are available to the project. Without it the API uses `/tmp` SQLite, which works but resets whenever Vercel starts a new instance (the app shows a yellow banner).
+4. Redeploy, then check `https://<your-domain>/api/health` → `{"ok":true, "storage": {...}}`.
+
+Notes for Vercel: simulations run inside the `POST /api/run/stream` request (progress is streamed), so they stay within the function's max duration (300 s by default on Fluid compute). Uploads are limited to ~4.5 MB by Vercel's request-body limit. Preview deployments with Vercel Authentication enabled are only reachable while you are logged in to Vercel.
 
 ## What is implemented
 
@@ -42,7 +54,7 @@ Configuration (optional, copy the `.env.example` files):
 | Leakage & PTPX | CSV/JSON import, exponential/quadratic fit with R², dI/dT, threshold 1/(V·θJA), Stable/Marginal/Unstable, electrothermal iteration, max stable power |
 | Results & Reports | Tj,max + location, Tc, Tb, θJA still/moving, θJB, θJC (estimate), Ψ-JT/Ψ-JB, heat-path split, top-N hotspots, compliance table, AI recommendations; PDF / XLSX / JSON / CSV export |
 | Validation Rules | VAL-001…VAL-010 in `shared/src/validation.ts`, shown inline on fields and enforced before a run |
-| API Data Model | `GET/POST/PUT/DELETE /api/projects…`, `PUT /api/projects/:id/{package,setup,simulation,…}`, `GET/PUT /api/materials`, `GET /api/jedec/templates`, `GET /api/solver/status`, `POST /api/solver/connect`, `POST /api/analysis/leakage`, `POST /api/run`, `GET /api/run/:id`, `GET /api/run/:id/events` (SSE), `GET /api/results/:jobId`, `POST /api/reports` |
+| API Data Model | `POST /api/run/stream` (run + live SSE progress in one request), `GET/POST/PUT/DELETE /api/projects…`, `PUT /api/projects/:id/{package,setup,simulation,…}`, `GET/PUT /api/materials`, `GET /api/jedec/templates`, `GET /api/solver/status`, `POST /api/solver/connect`, `POST /api/analysis/leakage`, `POST /api/run`, `GET /api/run/:id`, `GET /api/run/:id/events` (SSE), `GET /api/results/:jobId`, `POST /api/reports` |
 | Material Library | Seeded presets + editable custom materials |
 
 ### Thermal engine (built-in solver)

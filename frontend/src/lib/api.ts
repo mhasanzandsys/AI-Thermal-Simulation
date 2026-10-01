@@ -1,6 +1,13 @@
 import type { JobInfo, LeakageResult, Material, PreAnalysis, ProjectDoc, ThermalResults, ValidationIssue, Solver, Leakage, ReportConfig } from '@ats/shared';
 
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api').replace(/\/$/, '');
+/**
+ * API base URL.
+ * - Deployed (Vercel services) the API is served from the same domain under /api, so the default is the
+ *   relative path "/api" — this also works for every preview URL without CORS.
+ * - `npm run dev` talks to the Express server on port 4000.
+ * - Set NEXT_PUBLIC_API_URL only when the API lives on a different host.
+ */
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || (process.env.NODE_ENV === 'development' ? 'http://localhost:4000/api' : '/api')).replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public details?: unknown) { super(message); }
@@ -26,7 +33,7 @@ export interface JobDetail extends JobInfo { logs: string[]; residuals: { iterat
 export interface JedecTemplate { id: string; standard: string; title: string; metric: string; environment: string; inputs: string[]; outputs: string[]; notes: string }
 
 export const api = {
-  health: () => req<{ ok: boolean; busy: boolean }>('/health'),
+  health: () => req<{ ok: boolean; busy: boolean; serverless?: boolean; storage?: { kind: 'remote' | 'file'; location: string; persistent: boolean } }>('/health'),
   listProjects: () => req<ProjectSummary[]>('/projects'),
   createProject: (body: { name?: string; template?: 'blank' | 'demo' }) => req<ProjectDoc>('/projects', { method: 'POST', body: JSON.stringify(body) }),
   importProject: (doc: unknown) => req<ProjectDoc>('/projects/import', { method: 'POST', body: JSON.stringify(doc) }),
@@ -56,6 +63,7 @@ export const api = {
   job: (id: string) => req<JobDetail>(`/run/${id}`),
   cancel: (id: string) => req<{ ok: boolean }>(`/run/${id}/cancel`, { method: 'POST' }),
   eventsUrl: (id: string) => `${API_URL}/run/${id}/events`,
+  runStreamUrl: () => `${API_URL}/run/stream`,
   async report(projectId: string, jobId: string | undefined, format: ReportConfig['format'], sections: ReportConfig['sections']) {
     const res = await fetch(`${API_URL}/reports`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId, jobId, format, sections }) });
     if (!res.ok) { let e = 'Report failed'; try { e = (await res.json()).error; } catch { /* */ } throw new ApiError(res.status, e); }
