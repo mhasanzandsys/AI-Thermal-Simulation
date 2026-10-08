@@ -38,6 +38,7 @@ function log(j: LiveJob, msg: string) {
   j.logs.push(line);
   emit(j, 'log', line);
 }
+//jjj
 
 export function sseHeaders(res: Response) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
